@@ -21,6 +21,8 @@
 //! wrap it in a `tokio::sync::Mutex<DeviceHandle>` and call these helpers
 //! while holding the lock.
 
+#![allow(clippy::unused_async)] // block_in_place needs an async context but has no .await
+
 use std::time::Duration;
 
 use crate::error::UsbError;

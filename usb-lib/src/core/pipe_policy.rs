@@ -57,12 +57,12 @@ impl PipePolicy {
     /// Returns `None` for `TransferTimeout` (which is u32-valued).
     pub fn as_bool(&self) -> Option<bool> {
         match self {
-            Self::ShortPacketTerminate(v) => Some(*v),
-            Self::AutoClearStall(v) => Some(*v),
-            Self::AllowPartialReads(v) => Some(*v),
-            Self::AutoFlush(v) => Some(*v),
-            Self::RawIo(v) => Some(*v),
-            Self::ResetPipeOnResume(v) => Some(*v),
+            Self::ShortPacketTerminate(v)
+            | Self::AutoClearStall(v)
+            | Self::AllowPartialReads(v)
+            | Self::AutoFlush(v)
+            | Self::RawIo(v)
+            | Self::ResetPipeOnResume(v) => Some(*v),
             Self::TransferTimeout(_) => None,
         }
     }

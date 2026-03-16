@@ -126,7 +126,7 @@ mod platform {
             len += 1;
         }
         let sym_slice = std::slice::from_raw_parts(sym_ptr, len);
-        let path = String::from_utf16_lossy(sym_slice).to_string();
+        let path = String::from_utf16_lossy(sym_slice);
 
         let event = if action == CM_NOTIFY_ACTION_DEVICEINTERFACEARRIVAL {
             HotplugEvent::DeviceArrived { path }
