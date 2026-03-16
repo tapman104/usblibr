@@ -9,10 +9,10 @@ use core_foundation::string::CFString;
 use core_foundation_sys::base::CFTypeRef;
 use core_foundation_sys::uuid::{CFUUIDBytes, CFUUIDGetUUIDBytes, CFUUIDRef};
 use IOKit_sys as iokit_sys;
-use iokit_sys::io_iterator_t;
-use iokit_sys::io_service_t;
-use iokit_sys::kIOMasterPortDefault;
-use iokit_sys::kIOReturnSuccess;
+use iokit_sys::{io_iterator_t, io_service_t, kIOReturnSuccess};
+// Note: kIOMasterPortDefault is often 0 (MACH_PORT_NULL) or specifically defined.
+// In newer SDKs it's kIOMainPortDefault.
+const K_IO_MASTER_PORT_DEFAULT: u32 = 0;
 
 use crate::core::{
     ConfigDescriptor, ControlSetup, DeviceDescriptor, DeviceInfo, EndpointInfo, PipePolicy,
@@ -180,12 +180,39 @@ extern "C" {
         score: *mut i32,
     ) -> IOReturn;
 
-    fn kIOCFPlugInInterfaceID() -> CFUUIDRef;
-    fn kIOUSBDeviceUserClientTypeID() -> CFUUIDRef;
-    fn kIOUSBDeviceInterfaceID() -> CFUUIDRef;
-    fn kIOUSBInterfaceUserClientTypeID() -> CFUUIDRef;
-    fn kIOUSBInterfaceInterfaceID() -> CFUUIDRef;
+#[link(name = "CoreFoundation", kind = "framework")]
+extern "C" {
+    fn CFUUIDCreateWithBytes(
+        alloc: *const std::ffi::c_void,
+        b0: u8, b1: u8, b2: u8, b3: u8, b4: u8, b5: u8, b6: u8, b7: u8,
+        b8: u8, b9: u8, b10: u8, b11: u8, b12: u8, b13: u8, b14: u8, b15: u8,
+    ) -> CFUUIDRef;
 }
+
+fn k_io_cf_plugin_interface_id() -> CFUUIDRef {
+    unsafe { CFUUIDCreateWithBytes(std::ptr::null_mut(), 0xC2, 0x44, 0xE8, 0x58, 0x10, 0x9C, 0x11, 0xD4, 0x91, 0xD4, 0x00, 0x50, 0xE4, 0xC0, 0x2F, 0xDC) }
+}
+fn k_io_usb_device_user_client_type_id() -> CFUUIDRef {
+    unsafe { CFUUIDCreateWithBytes(std::ptr::null_mut(), 0x9D, 0x5D, 0x72, 0x1A, 0x1E, 0xBD, 0x11, 0xD3, 0x83, 0x9C, 0x00, 0x05, 0x02, 0x8F, 0x18, 0xD5) }
+}
+fn k_io_usb_interface_user_client_type_id() -> CFUUIDRef {
+    unsafe { CFUUIDCreateWithBytes(std::ptr::null_mut(), 0x2D, 0x97, 0x86, 0xC6, 0x9E, 0xF3, 0x11, 0xD4, 0xAD, 0x51, 0x00, 0x05, 0x02, 0x8F, 0x18, 0xD5) }
+}
+
+// Manual UUID byte definitions for standard IOKit USB interfaces.
+// These are used when the framework symbols are not easily linked.
+const K_IO_CF_PLUGIN_INTERFACE_ID_BYTES: CFUUIDBytes = CFUUIDBytes {
+    byte0: 0xC2, byte1: 0x44, byte2: 0xE8, byte3: 0x58, byte4: 0x10, byte5: 0x9C, byte6: 0x11, byte7: 0xD4,
+    byte8: 0x91, byte9: 0xD4, byte10: 0x00, byte11: 0x50, byte12: 0xE4, byte13: 0xC0, byte14: 0x2F, byte15: 0xDC,
+};
+const K_IO_USB_DEVICE_INTERFACE_ID_BYTES: CFUUIDBytes = CFUUIDBytes {
+    byte0: 0x5E, byte1: 0xAD, byte2: 0x81, byte3: 0x51, byte4: 0x50, byte5: 0xBC, byte6: 0x11, byte7: 0xD4,
+    byte8: 0xA7, byte9: 0x1C, byte10: 0x00, byte11: 0x05, byte12: 0x02, byte13: 0x8F, byte14: 0x18, byte15: 0xD5,
+};
+const K_IO_USB_INTERFACE_INTERFACE_ID_BYTES: CFUUIDBytes = CFUUIDBytes {
+    byte0: 0x23, byte1: 0x83, byte2: 0x67, byte3: 0x61, byte4: 0x9E, byte5: 0x86, byte6: 0x11, byte7: 0xD4,
+    byte8: 0xB3, byte9: 0x24, byte10: 0x00, byte11: 0x05, byte12: 0x02, byte13: 0x8F, byte14: 0x18, byte15: 0xD5,
+};
 
 // -----------------------------------------------------------------------
 // Public backend entry point
@@ -224,7 +251,7 @@ fn enumerate_iokit_devices() -> Result<Vec<DeviceInfo>, UsbError> {
     let mut iter: io_iterator_t = 0;
     // SAFETY: matching_dict is valid; iter is a valid out-pointer.
     let kr = unsafe {
-        iokit_sys::IOServiceGetMatchingServices(kIOMasterPortDefault, matching_dict, &mut iter)
+        iokit_sys::IOServiceGetMatchingServices(K_IO_MASTER_PORT_DEFAULT, matching_dict, &mut iter)
     };
     if kr != kIOReturnSuccess {
         return Err(UsbError::Other(format!("IOServiceGetMatchingServices err {kr:#x}")));
@@ -289,9 +316,7 @@ fn iokit_integer_property(service: io_service_t, key: &str) -> Option<i64> {
         iokit_sys::IORegistryEntryCreateCFProperty(
             service,
             cf_key.as_concrete_TypeRef() as _,
-            // IOKit-sys 0.1.x uses an older CoreFoundation allocator pointer type.
-            // Casting keeps the same "default allocator" value across crate versions.
-            kCFAllocatorDefault as _,
+            std::ptr::null_mut(),
             0,
         )
     };
@@ -312,9 +337,7 @@ fn iokit_string_property(service: io_service_t, key: &str) -> Option<String> {
         iokit_sys::IORegistryEntryCreateCFProperty(
             service,
             cf_key.as_concrete_TypeRef() as _,
-            // IOKit-sys 0.1.x uses an older CoreFoundation allocator pointer type.
-            // Casting keeps the same "default allocator" value across crate versions.
-            kCFAllocatorDefault as _,
+            std::ptr::null_mut(),
             0,
         )
     };
@@ -538,8 +561,8 @@ impl MacOsDevice {
             let create_plugin_kr = unsafe {
                 IOCreatePlugInInterfaceForService(
                     service,
-                    kIOUSBInterfaceUserClientTypeID(),
-                    kIOCFPlugInInterfaceID(),
+                    k_io_usb_interface_user_client_type_id(),
+                    k_io_cf_plugin_interface_id(),
                     &mut plugin,
                     &mut score,
                 )
@@ -566,7 +589,7 @@ impl MacOsDevice {
                     .map(|qi| {
                         qi(
                             plugin as _,
-                            CFUUIDGetUUIDBytes(kIOUSBInterfaceInterfaceID()),
+                            K_IO_USB_INTERFACE_INTERFACE_ID_BYTES,
                             &mut interface_intf as *mut _ as *mut _,
                         )
                     })
@@ -726,8 +749,8 @@ impl MacOsDevice {
             let create_plugin_kr = unsafe {
                 IOCreatePlugInInterfaceForService(
                     service,
-                    kIOUSBInterfaceUserClientTypeID(),
-                    kIOCFPlugInInterfaceID(),
+                    k_io_usb_interface_user_client_type_id(),
+                    k_io_cf_plugin_interface_id(),
                     &mut plugin,
                     &mut score,
                 )
@@ -749,7 +772,7 @@ impl MacOsDevice {
                     .map(|qi| {
                         qi(
                             plugin as _,
-                            CFUUIDGetUUIDBytes(kIOUSBInterfaceInterfaceID()),
+                            K_IO_USB_INTERFACE_INTERFACE_ID_BYTES,
                             &mut interface_intf as *mut _ as *mut _,
                         )
                     })
@@ -1261,7 +1284,7 @@ fn find_service_by_bus_addr(bus: u8, addr: u8) -> Option<io_service_t> {
 
     let mut iter: io_iterator_t = 0;
     let kr = unsafe {
-        iokit_sys::IOServiceGetMatchingServices(kIOMasterPortDefault, matching_dict, &mut iter)
+        iokit_sys::IOServiceGetMatchingServices(K_IO_MASTER_PORT_DEFAULT, matching_dict, &mut iter)
     };
     if kr != kIOReturnSuccess {
         return None;
@@ -1273,10 +1296,10 @@ fn find_service_by_bus_addr(bus: u8, addr: u8) -> Option<io_service_t> {
             break;
         }
 
-        let svc_bus = iokit_integer_property(service, "USBBusNumber").unwrap_or(-1) as i16;
-        let svc_addr = iokit_integer_property(service, "USB Address").unwrap_or(-1) as i16;
+        let svc_bus = iokit_integer_property(service, "USBBusNumber").unwrap_or(0) as u8;
+        let svc_addr = iokit_integer_property(service, "USB Address").unwrap_or(0) as u8;
 
-        if svc_bus == bus as i16 && svc_addr == addr as i16 {
+        if svc_bus == bus && svc_addr == addr {
             unsafe { iokit_sys::IOObjectRelease(iter) };
             return Some(service);
         }
@@ -1299,8 +1322,8 @@ fn create_device_interface(
     let kr = unsafe {
         IOCreatePlugInInterfaceForService(
             service,
-            kIOUSBDeviceUserClientTypeID(),
-            kIOCFPlugInInterfaceID(),
+            k_io_usb_device_user_client_type_id(),
+            k_io_cf_plugin_interface_id(),
             &mut plugin,
             &mut score,
         )
@@ -1319,7 +1342,7 @@ fn create_device_interface(
         (**plugin).QueryInterface.map(|qi| {
             qi(
                 plugin as _,
-                CFUUIDGetUUIDBytes(kIOUSBDeviceInterfaceID()),
+                K_IO_USB_DEVICE_INTERFACE_ID_BYTES,
                 &mut device_intf as *mut _ as *mut _,
             )
         }).unwrap_or(K_IORETURN_UNSUPPORTED)

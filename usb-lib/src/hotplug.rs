@@ -115,6 +115,7 @@ mod platform {
         if context.is_null() || event_data.is_null() {
             return 0;
         }
+
         if action != CM_NOTIFY_ACTION_DEVICEINTERFACEARRIVAL
             && action != CM_NOTIFY_ACTION_DEVICEINTERFACEREMOVAL
         {
@@ -291,7 +292,9 @@ mod platform {
         CFRunLoopRun, CFRunLoopSourceRef, CFRunLoopStop,
     };
     use IOKit_sys as iokit_sys;
-    use iokit_sys::{io_iterator_t, kIOMasterPortDefault, kIOReturnSuccess};
+    use iokit_sys::{io_iterator_t, kIOReturnSuccess};
+
+    const K_IO_MASTER_PORT_DEFAULT: u32 = 0;
 
     use super::HotplugEvent;
 
@@ -418,7 +421,7 @@ mod platform {
             iokit_sys::IORegistryEntryCreateCFProperty(
                 service,
                 cf_key.as_concrete_TypeRef() as _,
-                kCFAllocatorDefault as _,
+                std::ptr::null_mut(),
                 0,
             )
         };
@@ -460,10 +463,9 @@ mod platform {
             // SAFETY: CFRunLoopGetCurrent returns the run loop for this thread.
             let run_loop: CFRunLoopRef = unsafe { CFRunLoopGetCurrent() };
 
-            // SAFETY: kIOMasterPortDefault is a valid mach_port_t; cast to u32 is
-            // sound because mach_port_t = c_uint = u32 on all Apple platforms.
+            // SAFETY: K_IO_MASTER_PORT_DEFAULT as u32 is sound on Apple platforms.
             let notify_port: IONotificationPortRef =
-                unsafe { IONotificationPortCreate(kIOMasterPortDefault as u32) };
+                unsafe { IONotificationPortCreate(K_IO_MASTER_PORT_DEFAULT) };
             if notify_port.is_null() {
                 log::error!("macOS hotplug: IONotificationPortCreate failed");
                 let _ = rl_tx.send(SendRunLoop(std::ptr::null_mut()));
