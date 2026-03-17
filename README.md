@@ -16,14 +16,17 @@ A cross-platform Rust library for USB device communication on **Windows**, **Lin
 
 ## Platform Support
 
-| Feature | Windows | Linux | macOS |
-|---|---|---|---|
-| Enumeration | ✅ WinUSB | ✅ udev | ✅ IOKit |
-| Control transfers | ✅ | ✅ USBDEVFS | ✅ IOUSBDevice |
-| Bulk/interrupt | ✅ | ✅ | ✅ |
-| Isochronous | ✅ (feature flag) | 🚧 | 🚧 |
-| Hotplug | ✅ | ✅ | ✅ |
-| Async (Tokio) | ✅ (feature flag) | ✅ | ✅ |
+| Feature | Windows | Linux | macOS | Mock |
+|---|---|---|---|---|
+| Enumeration | ✅ WinUSB | ✅ udev | ✅ IOKit | ✅ In-memory |
+| Control Transfers | ✅ | ✅ | ✅ | ✅ |
+| Bulk/Interrupt | ✅ | ✅ | ✅ | ✅ |
+| Isochronous | ✅ (`isochronous`) | 🚧 | 🚧 | ❌ |
+| Hotplug | ✅ | ✅ | ✅ | ❌ |
+| Async (Tokio) | ✅ (`tokio`) | ✅ | ✅ | ❌ |
+
+> [!NOTE]
+> The `async_transfers` module (enabled via the `tokio` feature) requires a **multi-threaded Tokio runtime** because it utilizes `tokio::task::block_in_place` to bridge synchronous I/O.
 
 ## Installation
 
@@ -34,58 +37,57 @@ Add to your `Cargo.toml`:
 rust-usb = "0.1"
 ```
 
-Optional features:
-
-```toml
-[dependencies]
-rust-usb = { version = "0.1", features = ["isochronous", "tokio"] }
-```
-
 ## Quick Start
+
+### 1. Listing connected devices
 
 ```rust
 use rust_usb::UsbContext;
 
-fn main() -> anyhow::Result<()> {
-    let ctx = UsbContext::new()?;
+let ctx = UsbContext::new();
+let devices = ctx.devices()?;
 
-    for device in ctx.list_devices()? {
-        println!(
-            "VID={:04x} PID={:04x}  {}",
-            device.vendor_id,
-            device.product_id,
-            device.product.as_deref().unwrap_or("(unknown)")
-        );
-    }
-
-    Ok(())
+for device in devices {
+    println!("Device at {}: {:04x}:{:04x}", device.path, device.vendor_id, device.product_id);
 }
 ```
 
-Open a device and perform a control transfer:
+### 2. Opening a device and performing I/O
 
 ```rust
-use rust_usb::{UsbContext, ControlSetup, Direction, RequestType, Recipient};
+use std::time::Duration;
+use rust_usb::UsbContext;
 
-let ctx = UsbContext::new()?;
-let devices = ctx.list_devices()?;
-let info = devices.into_iter().find(|d| d.vendor_id == 0x1234).unwrap();
+let ctx = UsbContext::new();
+let mut handle = ctx.open("platform-specific-path")?;
 
-let mut handle = ctx.open_device(&info)?;
+// Interfaces must be claimed before performing pipe I/O
 handle.claim_interface(0)?;
 
-let setup = ControlSetup::new(
-    Direction::DeviceToHost,
-    RequestType::Standard,
-    Recipient::Device,
-    0x06, // GET_DESCRIPTOR
-    0x0100,
-    0x0000,
-);
+let mut buf = [0u8; 64];
+let timeout = Duration::from_secs(1);
 
-let mut buf = [0u8; 18];
-let n = handle.control_transfer_in(&setup, &mut buf, 1000)?;
-println!("Received {} bytes", n);
+// Bulk Read from EP 0x81
+let n = handle.bulk_read(0x81, &mut buf, timeout)?;
+
+// Bulk Write to EP 0x01
+handle.bulk_write(0x01, &buf[..n], timeout)?;
+```
+
+### 3. Monitoring device arrivals and departures
+
+```rust
+use rust_usb::{UsbContext, HotplugEvent};
+
+let ctx = UsbContext::new();
+
+// The handle keeps the subscription alive; drop it to unregister
+let _handle = ctx.register_hotplug(|event| {
+    match event {
+        HotplugEvent::DeviceArrived { path } => println!("Device arrived: {}", path),
+        HotplugEvent::DeviceLeft { path } => println!("Device removed: {}", path),
+    }
+})?;
 ```
 
 ## Examples

@@ -9,10 +9,11 @@ use windows::Win32::Devices::DeviceAndDriverInstallation::{
 };
 use windows::Win32::Devices::Usb::{
     WinUsb_AbortPipe, WinUsb_ControlTransfer, WinUsb_Free, WinUsb_GetAssociatedInterface,
-    WinUsb_GetCurrentAlternateSetting, WinUsb_GetPipePolicy, WinUsb_Initialize, WinUsb_QueryPipe,
-    WinUsb_ReadPipe, WinUsb_ResetPipe, WinUsb_SetCurrentAlternateSetting, WinUsb_SetPipePolicy,
-    WinUsb_WritePipe, WINUSB_INTERFACE_HANDLE, WINUSB_PIPE_INFORMATION, WINUSB_PIPE_POLICY,
-    WINUSB_SETUP_PACKET,
+    WinUsb_GetCurrentAlternateSetting, WinUsb_GetPipePolicy, WinUsb_Initialize,
+    WinUsb_QueryInterfaceSettings, WinUsb_QueryPipe, WinUsb_ReadPipe, WinUsb_ResetPipe,
+    WinUsb_SetCurrentAlternateSetting, WinUsb_SetPipePolicy, WinUsb_WritePipe,
+    USB_INTERFACE_DESCRIPTOR, WINUSB_INTERFACE_HANDLE, WINUSB_PIPE_INFORMATION,
+    WINUSB_PIPE_POLICY, WINUSB_SETUP_PACKET,
 };
 use windows::Win32::Foundation::{
     CloseHandle, ERROR_ACCESS_DENIED, ERROR_IO_PENDING, ERROR_OPERATION_ABORTED, GENERIC_READ,
@@ -758,19 +759,43 @@ impl UsbDevice for WinUsbDevice {
             return Ok(()); // already claimed
         }
 
-        // WinUSB associated-interface index is 0-based from interface 1.
-        let assoc_index = interface - 1;
-        let mut assoc_handle = WINUSB_INTERFACE_HANDLE::default();
+        // Search for the interface by its logical bInterfaceNumber among associated interfaces.
+        // Windows associated-interface index (assoc_index) is 0-based and sequential, but
+        // may not match bInterfaceNumber for composite devices with gaps or custom layouts.
+        for assoc_index in 0u8..32u8 {
+            let mut assoc_handle = WINUSB_INTERFACE_HANDLE::default();
 
-        // SAFETY: usb_handle is valid; assoc_index is within the device's interface count.
-        unsafe {
-            WinUsb_GetAssociatedInterface(self.usb_handle, assoc_index, &mut assoc_handle)
-                .map_err(UsbError::from)?;
+            // SAFETY: usb_handle is valid; assoc_index search is within a reasonable bound.
+            // WinUsb_GetAssociatedInterface fails when index is out of bounds.
+            if unsafe {
+                WinUsb_GetAssociatedInterface(self.usb_handle, assoc_index, &mut assoc_handle)
+                    .is_err()
+            } {
+                break;
+            }
+
+            // Query the interface descriptor for the zero-th alternate setting.
+            let mut desc = USB_INTERFACE_DESCRIPTOR::default();
+            // SAFETY: assoc_handle is valid; desc is a valid out-parameter.
+            let kr = unsafe { WinUsb_QueryInterfaceSettings(assoc_handle, 0, &mut desc) };
+
+            if kr.is_ok() && desc.bInterfaceNumber == interface {
+                // Found it.  Populate cache and store handle.
+                self.build_endpoint_cache(assoc_handle);
+                self.assoc_handles.push((interface, assoc_handle));
+                return Ok(());
+            }
+
+            // Not the one; release the handle before continuing.
+            // SAFETY: assoc_handle was created by GetAssociatedInterface and we take ownership here.
+            unsafe {
+                let _ = WinUsb_Free(assoc_handle);
+            }
         }
 
-        self.build_endpoint_cache(assoc_handle);
-        self.assoc_handles.push((interface, assoc_handle));
-        Ok(())
+        Err(UsbError::Other(format!(
+            "interface {interface} not found among associated interfaces"
+        )))
     }
 
     fn release_interface(&mut self, interface: u8) -> Result<(), UsbError> {

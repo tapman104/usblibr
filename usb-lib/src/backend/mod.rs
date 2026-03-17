@@ -16,6 +16,8 @@ pub mod macos;
 #[cfg(target_os = "windows")]
 pub mod windows;
 
+pub mod mock;
+
 /// Trait implemented by each platform backend.
 /// The backend is responsible for enumeration and opening devices.
 pub trait UsbBackend: Send + Sync {

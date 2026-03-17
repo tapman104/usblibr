@@ -413,12 +413,11 @@ impl MacOsDevice {
                 .map(|f| f(intf_ptr as _))
                 .unwrap_or(K_IORETURN_NOT_OPEN)
         };
-        if kr != kIOReturnSuccess && kr != K_IORETURN_EXCLUSIVE_ACCESS {
+        if kr != kIOReturnSuccess {
             // 0xe00002d5 = kIOReturnExclusiveAccess — another process has it, treat as permission denied
             // 0xe00002d6 = kIOReturnNotOpen — shouldn't happen, but guard
-            // On exclusive access we still proceed — read-only ops (GET_DESCRIPTOR) work without open on some versions
             if kr == K_IORETURN_EXCLUSIVE_ACCESS {
-                log::warn!("IOUSBDevice: exclusive access denied for {path}; descriptor reads may fail");
+                return Err(UsbError::PermissionDenied);
             } else {
                 return Err(UsbError::Io(std::io::Error::from_raw_os_error(kr as i32)));
             }
