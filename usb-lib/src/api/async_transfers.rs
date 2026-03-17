@@ -21,40 +21,37 @@
 //! wrap it in a `tokio::sync::Mutex<DeviceHandle>` and call these helpers
 //! while holding the lock.
 
-#![allow(clippy::unused_async)] // block_in_place needs an async context but has no .await
-
 use std::time::Duration;
 
-use crate::error::UsbError;
+#[cfg(feature = "tokio")]
+use tokio::task::spawn_blocking;
 
-// We re-export DeviceHandle so callers only need one import.
 use crate::api::device_handle::DeviceHandle;
+use crate::error::UsbError;
 
 /// Perform a bulk IN transfer from `endpoint` into `buf`, returning the
 /// number of bytes received.
 ///
-/// The call blocks a Tokio blocking thread (via `spawn_blocking`) while the
-/// underlying OVERLAPPED wait is in progress.
-///
-/// # Errors
-///
-/// Returns [`UsbError::Timeout`] if the transfer does not complete within
-/// `timeout`, or another [`UsbError`] variant on I/O failure.
+/// This function uses [`tokio::task::spawn_blocking`] to yield control to the
+/// Tokio runtime while the I/O is in-flight. It works on both multi-threaded
+/// and single-threaded runtimes.
 pub async fn bulk_read(
     handle: &mut DeviceHandle,
     endpoint: u8,
     buf: &mut Vec<u8>,
     timeout: Duration,
 ) -> Result<usize, UsbError> {
-    // We need ownership to send into spawn_blocking.
-    // Swap the buffer out temporarily so we can move it into the closure.
     let cap = buf.len();
     let mut inner_buf = std::mem::take(buf);
     inner_buf.resize(cap, 0);
 
-    let result = tokio::task::block_in_place(|| {
-        handle.async_bulk_read(endpoint, &mut inner_buf, timeout)
-    });
+    let h = handle.clone();
+    let (inner_buf, result) = spawn_blocking(move || {
+        let res = h.async_bulk_read(endpoint, &mut inner_buf, timeout);
+        (inner_buf, res)
+    })
+    .await
+    .map_err(|e| UsbError::Other(format!("spawn_blocking failed: {e}")))?;
 
     *buf = inner_buf;
     result
@@ -68,7 +65,11 @@ pub async fn bulk_write(
     buf: &[u8],
     timeout: Duration,
 ) -> Result<usize, UsbError> {
-    tokio::task::block_in_place(|| handle.async_bulk_write(endpoint, buf, timeout))
+    let h = handle.clone();
+    let data = buf.to_vec();
+    spawn_blocking(move || h.async_bulk_write(endpoint, &data, timeout))
+        .await
+        .map_err(|e| UsbError::Other(format!("spawn_blocking failed: {e}")))?
 }
 
 /// Perform an interrupt IN transfer from `endpoint` into `buf`.
@@ -82,9 +83,13 @@ pub async fn interrupt_read(
     let mut inner_buf = std::mem::take(buf);
     inner_buf.resize(cap, 0);
 
-    let result = tokio::task::block_in_place(|| {
-        handle.async_interrupt_read(endpoint, &mut inner_buf, timeout)
-    });
+    let h = handle.clone();
+    let (inner_buf, result) = spawn_blocking(move || {
+        let res = h.async_interrupt_read(endpoint, &mut inner_buf, timeout);
+        (inner_buf, res)
+    })
+    .await
+    .map_err(|e| UsbError::Other(format!("spawn_blocking failed: {e}")))?;
 
     *buf = inner_buf;
     result
@@ -97,5 +102,9 @@ pub async fn interrupt_write(
     buf: &[u8],
     timeout: Duration,
 ) -> Result<usize, UsbError> {
-    tokio::task::block_in_place(|| handle.async_interrupt_write(endpoint, buf, timeout))
+    let h = handle.clone();
+    let data = buf.to_vec();
+    spawn_blocking(move || h.async_interrupt_write(endpoint, &data, timeout))
+        .await
+        .map_err(|e| UsbError::Other(format!("spawn_blocking failed: {e}")))?
 }

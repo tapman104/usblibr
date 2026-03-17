@@ -95,4 +95,11 @@ fn test_mock_device_operations() {
     let data = [1, 2, 3, 4];
     let n = device.bulk_write(0x01, &data, Duration::from_secs(1)).expect("Should write");
     assert_eq!(n, 4);
+
+    // Pipe policy (unsupported on mock)
+    let policy_err = device.get_pipe_policy(0x01, rust_usb::PipePolicyKind::TransferTimeout);
+    assert!(matches!(policy_err, Err(UsbError::Unsupported)));
+
+    let set_policy_err = device.set_pipe_policy(0x01, rust_usb::PipePolicy::TransferTimeout(1000));
+    assert!(matches!(set_policy_err, Err(UsbError::Unsupported)));
 }
